@@ -12,7 +12,7 @@ const PORT = process.env.PORT || 5001    //define port
 
 const corsOptions  = {
     origin : [
-        "https://career-agent-frontend-96blkpdr0-sambhav-goels-projects.vercel.app",
+        "https://career-agent-frontend-delta.vercel.app/",
         "http://localhost:3000"
     ]
 }
