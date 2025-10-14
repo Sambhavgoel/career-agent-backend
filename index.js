@@ -10,8 +10,11 @@ connectDB()
 const app = express()    // import express
 const PORT = process.env.PORT || 5001    //define port
 
+const frontend = {
+    origin : "https://career-agent-frontend-delta.vercel.app"
+}
 //middlewares
-app.use(cors())
+app.use(cors(frontend))
 app.use(express.json())
 
 //connect routes to server
