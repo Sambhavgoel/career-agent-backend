@@ -69,4 +69,33 @@ router.post('/login',async(req,res)=>{
     }
 })
 
+// @route   POST /api/auth/guest
+// @desc    Authenticate as a guest user & get token
+router.post('/guest', async (req, res) => {
+  try {
+    // Option 1: Using a generic guest identifier
+    const payload = {
+      user: {
+        id: 'GUEST_USER_ID', // A generic, non-database ID
+        isGuest: true
+      }
+    };
+    // Option 2: No specific ID, just a flag
+    // const payload = { isGuest: true };
+
+    jwt.sign(
+      payload,
+      process.env.JWT_SECRET,
+      { expiresIn: '1h' },
+      (err, token) => {
+        if (err) throw err;
+        res.json({ token });
+      }
+    );
+  } catch (err) {
+    console.error(err.message);
+    res.status(500).send('Server Error');
+  }
+});
+
 module.exports = router
