@@ -5,15 +5,23 @@ const authMiddleware = require('../middleware/authMiddleware');
 const Conversation = require('../models/Conversation');
 const { GoogleGenerativeAI } = require('@google/generative-ai');
 
-const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
-// Using a stable model name is recommended
-const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash-latest" });
+// Ensure API key is loaded
+if (!process.env.GEMINI_API_KEY) {
+    throw new Error('GEMINI_API_KEY is not set in the .env file');
+}
 
-// @route   GET /api/conversations
-// @desc    Get a list of all user's conversations (id and title only)
-// @access  Private
+const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
+// ✅ Use a stable model name
+const model = genAI.getGenerativeModel({ model: "gemini-pro" });
+
+// GET /api/conversations (List)
 router.get('/', authMiddleware, async (req, res) => {
-    // console.log('✅ Request received at GET1 /api/conversations');
+    if (req.user && req.user.isGuest) {
+        return res.json([]);
+    }
+    if (!req.user || !req.user.id) {
+         return res.status(401).json({ msg: 'User not properly authenticated.' });
+    }
     try {
         const conversations = await Conversation.find({ user: req.user.id })
             .sort({ updatedAt: -1 })
@@ -21,85 +29,104 @@ router.get('/', authMiddleware, async (req, res) => {
         res.json(conversations);
     } catch (error) {
         console.error('Error fetching conversations list:', error);
-        res.status(500).send('Server Error');
+        res.status(500).json({ msg: 'Server Error fetching conversation list.' }); // Send JSON error
     }
 });
 
-// @route   GET /api/conversations/:id
-// @desc    Get the full history of a specific conversation
-// @access  Private
+// GET /api/conversations/:id (History)
 router.get('/:id', authMiddleware, async (req, res) => {
-    // console.log('✅ Request received at GET2 /api/conversations');
+    if (req.user && req.user.isGuest) {
+         return res.status(403).json({ msg: 'Guests do not have saved conversations.' });
+    }
+    if (!req.user || !req.user.id) {
+         return res.status(401).json({ msg: 'User not properly authenticated.' });
+    }
     try {
         const conversation = await Conversation.findOne({ _id: req.params.id, user: req.user.id });
         if (!conversation) {
-            return res.status(404).json({ msg: 'Conversation not found' });
+            return res.status(404).json({ msg: 'Conversation not found or does not belong to user.' });
         }
         res.json(conversation.messages);
     } catch (error) {
-        console.error('Error fetching conversation history:', error);
-        res.status(500).send('Server Error');
+        console.error('Error fetching specific conversation history:', error);
+         if (error.kind === 'ObjectId') {
+            return res.status(400).json({ msg: 'Invalid conversation ID format.' });
+         }
+        res.status(500).json({ msg: 'Server Error fetching conversation history.' }); // Send JSON error
     }
 });
 
-// @route   POST /api/conversations
-// @desc    Send a message (creates a new conversation or adds to an existing one)
-// @access  Private
+// POST /api/conversations (Send Message)
 router.post('/', authMiddleware, async (req, res) => {
-    // console.log('✅ Request received at POST /api/conversations');
-    const { message, conversationId } = req.body;
-    const history = req.body.history || [];
-    const isGuest = req.user.isGuest; // ✅ ADDED: Check if the user is a guest from the token payload
+    const { message, conversationId, history } = req.body;
+    const isGuest = req.user && req.user.isGuest;
+
+    if (!message) {
+        return res.status(400).json({ msg: 'Message content is required.' });
+    }
 
     try {
-        //ai response
-        const chat = model.startChat({ history });
-        const instruction = "You are a helpful and expert career coach. Answer the user's question concisely and professionally. Please use Markdown for formatting. User's question: ";
+        // 1. Get AI Response
+        const chat = model.startChat({ history: history || [] });
+        const instruction = "You are a helpful and expert career coach. Answer the user's question concisely and professionally. Please use Markdown for formatting (like lists, bold text, and code blocks). User's question: ";
         const result = await chat.sendMessage(instruction + message);
+
+        if (!result || !result.response || typeof result.response.text !== 'function') {
+             console.error('Invalid response structure received from Gemini API:', result);
+             throw new Error('Invalid response structure from AI service.');
+        }
         const aiReplyText = result.response.text();
 
         const userMessage = { role: 'user', parts: [{ text: message }] };
         const aiMessage = { role: 'model', parts: [{ text: aiReplyText }] };
-        let savedConversationId = conversationId; // Default to existing ID or null
+        let savedConversationId = conversationId;
 
-        //save to db
-        // ✅ ADDED: Only save if the user is NOT a guest
+        // 2. Save to Database ONLY if NOT a guest
         if (!isGuest) {
-            let conversation;
-            if (conversationId) {
-                //add to existing one
-                conversation = await Conversation.findOneAndUpdate(
-                    { _id: conversationId, user: req.user.id },
-                    { $push: { messages: { $each: [userMessage, aiMessage] } } },
-                    { new: true }
-                );
-            } else {
-                //create new one
-                const title = message.substring(0, 30);
-                conversation = new Conversation({
-                    user: req.user.id,
-                    title: title,
-                    messages: [userMessage, aiMessage]
-                });
-                await conversation.save();
-            }
+             if (!req.user || !req.user.id) {
+                 console.error('User ID missing when trying to save conversation.');
+             } else {
+                 let conversation;
+                 if (conversationId) {
+                     conversation = await Conversation.findOneAndUpdate(
+                         { _id: conversationId, user: req.user.id },
+                         { $push: { messages: { $each: [userMessage, aiMessage] } } },
+                         { new: true, runValidators: true }
+                     );
+                 } else {
+                     const title = message.substring(0, 30);
+                     conversation = new Conversation({
+                         user: req.user.id,
+                         title: title,
+                         messages: [userMessage, aiMessage]
+                     });
+                     await conversation.save();
+                 }
 
-            // Check if conversation exists after attempting to save/update
-            if (!conversation) {
-                 console.error(`Failed to find or create conversation for user: ${req.user.id}, convoId: ${conversationId}`);
-                 // Don't throw a fatal error, just log it. The chat can still proceed without saving.
-            } else {
-                 savedConversationId = conversation._id; // Get the ID if a new conversation was created
+                 if (conversation) {
+                     savedConversationId = conversation._id;
+                 } else if (conversationId) {
+                     console.warn(`Could not find conversation with ID ${conversationId} for user ${req.user.id} to update.`);
+                 } else {
+                     console.error(`Failed to save new conversation for user ${req.user.id}.`);
+                 }
             }
-        } // End of if(!isGuest) block
+        }
 
+        // 3. Send Response to Client
         res.json({
             reply: aiReplyText,
-            conversationId: savedConversationId // Return correct ID
+            conversationId: savedConversationId
         });
+
     } catch (error) {
-        console.error('Error on conversation POST : ', error);
-        res.status(500).send('Server Error');
+        console.error('Error on conversation POST:', error); // Log the actual error
+        // Send specific error if it's from Google API config, otherwise generic
+        if (error.message && error.message.includes('API key not valid') || error.message && error.message.includes('permission') || error.status === 404) {
+             res.status(500).json({ msg: 'AI service configuration error. Please check API key and Google Cloud settings.' });
+        } else {
+             res.status(500).json({ msg: 'Failed to process chat message due to a server error.' });
+        }
     }
 });
 
