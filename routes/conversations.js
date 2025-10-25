@@ -12,7 +12,7 @@ if (!process.env.GEMINI_API_KEY) {
 
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
 // ✅ Use a stable model name
-const model = genAI.getGenerativeModel({ model: "gemini-2.0-flash-exp" });
+const model = genAI.getGenerativeModel({ model: "gemini-2.5-pro" });
 
 // GET /api/conversations (List)
 router.get('/', authMiddleware, async (req, res) => {
